@@ -6,16 +6,14 @@ app = FastAPI()
 
 @app.get("/api/health")
 def health_check():
-    # Debug: check /tmp is writable
+    # Debug: check if /tmp is writable
     try:
-        test_path = "/tmp/test_write.txt"
-        with open(test_path, "w") as f:
+        with open("/tmp/test_write.txt", "w") as f:
             f.write("hello")
-        return {"status": "ok", "writable": True, "path": test_path}
+        return {"status": "ok", "writable": True}
     except Exception as e:
         return {"status": "fail", "error": str(e)}
 
-# Now move DB init *into the endpoint* for testing
 @app.get("/api/init-db")
 def init_db_route():
     try:
