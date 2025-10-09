@@ -1,4 +1,4 @@
 fastapi
 uvicorn
 pydantic
-requests
+requestsfastapi==0.118.2
