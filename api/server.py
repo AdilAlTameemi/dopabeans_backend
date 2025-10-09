@@ -4,7 +4,7 @@ import os
 
 app = FastAPI()
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "orders.db")
+DB_PATH = "/tmp/orders.db"
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
