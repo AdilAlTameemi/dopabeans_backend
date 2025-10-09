@@ -1,0 +1,14 @@
+name: Auto Deploy Backend to Vercel
+
+on:
+  push:
+    branches:
+      - main  # or change this if your backend uses a different branch
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Vercel Deploy Hook
+        run: |
+          curl -X POST https://api.vercel.com/v1/integrations/deploy/prj_QqM7MeqPPvoH53HBt10ToxB8z23Z/zR4rX0uiY8
