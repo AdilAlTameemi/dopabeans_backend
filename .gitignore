@@ -1,6 +1,6 @@
+# Ignore SQLite DB and Python artifacts
+*.db
 __pycache__/
 *.py[cod]
-*.pyc
+*.log
 .env
-venv/
-.DS_Store
