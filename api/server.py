@@ -1,9 +1,9 @@
 from fastapi import FastAPI
 import sqlite3
-import os
 
 app = FastAPI()
 
+# ✅ Absolute path Vercel allows
 DB_PATH = "/tmp/orders.db"
 
 def init_db():
@@ -28,6 +28,6 @@ def init_db():
 
 init_db()
 
-@app.get("/health")
+@app.get("/api/health")
 def health_check():
     return {"status": "ok"}
