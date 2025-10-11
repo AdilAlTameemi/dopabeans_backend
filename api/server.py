@@ -49,7 +49,6 @@ class OrderRequest(BaseModel):
     quantity: int
     amount: float
 
-# Create payment session
 @app.post("/api/create-payment-session")
 def create_payment_session(order: OrderRequest):
     order_number = f"DB-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
@@ -60,6 +59,7 @@ def create_payment_session(order: OrderRequest):
     payload = {
         "merchant_key": MERCHANT_KEY,
         "operation": "purchase",
+        "methods": ["card"],
         "order": {
             "number": order_number,
             "amount": f"{order.amount:.2f}",
@@ -71,6 +71,19 @@ def create_payment_session(order: OrderRequest):
         "notification_url": "https://dopabeans-backend.vercel.app/api/payment-callback",
         "session_expiry": 60,
         "req_token": False,
+        "recurring_init": "true",
+        "customer": {
+            "name": "Test Customer",
+            "email": "test@example.com"
+        },
+        "billing_address": {
+            "country": "AE",
+            "state": "DU",
+            "city": "Dubai",
+            "address": "Sheikh Zayed Road, Tower 21",
+            "zip": "00000",
+            "phone": "0501234567"
+        },
         "hash": hashed
     }
 
