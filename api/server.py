@@ -10,7 +10,7 @@ import os
 app = FastAPI()
 
 # SQLite DB path (relative)
-DB_PATH = os.path.join(os.path.dirname(__file__), "orders.db")
+DB_PATH = "/tmp/orders.db"
 
 # DB init
 def init_db():
