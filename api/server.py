@@ -139,3 +139,12 @@ def health_check():
         return {"status": "ok", "writable": True}
     except:
         return {"status": "error", "writable": False}
+
+@app.get("/api/debug-totalpay")
+def debug_totalpay():
+    try:
+        r = requests.get("https://checkout.totalpay.global")
+        return {"status_code": r.status_code, "content": r.text[:300]}
+    except Exception as e:
+        return {"error": str(e)}
+    
