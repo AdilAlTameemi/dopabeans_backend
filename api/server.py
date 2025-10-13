@@ -56,8 +56,8 @@ def create_payment_session(order: OrderRequest):
     amount_str = f"{order.amount:.2f}"
     # Authentication signature: sha1(md5(strtoupper(order.number + order.amount + order.currency + order.description + merchant.pass)))
     hash_string = f"{order_number}{amount_str}AED{description}{MERCHANT_PASS}"
-    md5_upper = hashlib.md5(hash_string.encode("utf-8")).hexdigest().upper()
-    hashed = hashlib.sha1(md5_upper.encode("utf-8")).hexdigest()
+    md5_hex = hashlib.md5(hash_string.upper().encode("utf-8")).hexdigest()
+    hashed = hashlib.sha1(md5_hex.encode("utf-8")).hexdigest()
 
     payload = {
         "merchant_key": MERCHANT_KEY,
