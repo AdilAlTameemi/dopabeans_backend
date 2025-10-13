@@ -53,9 +53,11 @@ class OrderRequest(BaseModel):
 def create_payment_session(order: OrderRequest):
     order_number = f"DB-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
     description = f"{order.product} x{order.quantity} ({order.milk_type}, {order.order_type})"
-
-    hash_string = f"{MERCHANT_KEY}{order_number}{order.amount:.2f}AED{description}{MERCHANT_PASS}"
-    hashed = hashlib.sha1(hashlib.md5(hash_string.encode()).hexdigest().upper().encode()).hexdigest()
+    amount_str = f"{order.amount:.2f}"
+    # Authentication signature: sha1(md5(strtoupper(order.number + order.amount + order.currency + order.description + merchant.pass)))
+    hash_string = f"{order_number}{amount_str}AED{description}{MERCHANT_PASS}"
+    md5_upper = hashlib.md5(hash_string.encode("utf-8")).hexdigest().upper()
+    hashed = hashlib.sha1(md5_upper.encode("utf-8")).hexdigest()
 
     payload = {
         "merchant_key": MERCHANT_KEY,
@@ -63,7 +65,7 @@ def create_payment_session(order: OrderRequest):
         "methods": ["card"],
         "order": {
             "number": order_number,
-            "amount": f"{order.amount:.2f}",
+            "amount": amount_str,
             "currency": "AED",
             "description": description
         },
