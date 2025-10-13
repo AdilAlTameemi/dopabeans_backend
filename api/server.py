@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import hashlib
@@ -8,6 +9,22 @@ from datetime import datetime
 import os
 
 app = FastAPI()
+
+# CORS configuration so the frontend can reach the API.
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://dopabeansuae.com",
+    "https://www.dopabeansuae.com",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # SQLite DB path
 DB_PATH = os.path.join(os.path.dirname(__file__), "orders.db")
