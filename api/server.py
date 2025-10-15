@@ -86,8 +86,8 @@ def create_payment_session(order: OrderRequest):
             "currency": "AED",
             "description": description
         },
-        "success_url": "https://www.dopabeansuae.com/payment-success",
-        "cancel_url": "https://www.dopabeansuae.com/payment-cancel",
+        "success_url": "https://dopabeansuae.com/payment-success",
+        "cancel_url": "https://dopabeansuae.com/payment-cancel",
         "notification_url": "https://dopabeans-backend.onrender.com/api/payment-callback",
         "session_expiry": 60,
         "req_token": False,
