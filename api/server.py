@@ -199,9 +199,9 @@ def create_payment_session(order: OrderRequest):
         raise HTTPException(status_code=502, detail="Invalid response from payment provider")
 
     redirect_url = body.get("redirect_url")
-   if not redirect_url:
-       print("Missing redirect_url in TotalPay response:", body)
-       raise HTTPException(status_code=500, detail="Missing redirect URL")
+    if not redirect_url:
+        print("Missing redirect_url in TotalPay response:", body)
+        raise HTTPException(status_code=500, detail="Missing redirect URL")
 
     execute_non_query(
         INSERT_ORDER_SQL,
