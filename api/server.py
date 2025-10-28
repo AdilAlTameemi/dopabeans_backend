@@ -6,6 +6,7 @@ import hashlib
 import requests
 from datetime import datetime
 import os
+import socket
 from dotenv import load_dotenv
 from urllib.parse import urlparse, parse_qs
 
@@ -59,6 +60,15 @@ def get_connection():
             "sslmode": sslmode,
             "connect_timeout": int(query.get("connect_timeout", [10])[0] or 10)
         }
+
+        if parsed.hostname:
+            try:
+                infos = socket.getaddrinfo(parsed.hostname, parsed.port or 5432, family=socket.AF_INET, type=socket.SOCK_STREAM)
+                if infos:
+                    ipv4_addr = infos[0][4][0]
+                    connect_kwargs["hostaddr"] = ipv4_addr
+            except socket.gaierror:
+                pass
 
         # Forward additional query params except for sslmode/connect_timeout.
         for key, value in query.items():
