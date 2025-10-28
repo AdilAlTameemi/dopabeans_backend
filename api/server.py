@@ -7,6 +7,7 @@ import requests
 from datetime import datetime
 import os
 from dotenv import load_dotenv
+from urllib.parse import urlparse, parse_qs
 
 load_dotenv()
 
@@ -33,10 +34,6 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 USE_POSTGRES = bool(DATABASE_URL and DATABASE_URL.startswith("postgres"))
 
 if USE_POSTGRES:
-    # Ensure SSL is enforced for Supabase connections if not already specified.
-    if "sslmode" not in DATABASE_URL:
-        DATABASE_URL = f"{DATABASE_URL}?sslmode=require"
-
     import psycopg2
 
     PLACEHOLDER = "%s"
@@ -49,7 +46,27 @@ else:
 
 def get_connection():
     if USE_POSTGRES:
-        return psycopg2.connect(DATABASE_URL)
+        parsed = urlparse(DATABASE_URL)
+        query = parse_qs(parsed.query or "")
+        sslmode = query.get("sslmode", ["require"])[0] or "require"
+
+        connect_kwargs = {
+            "dbname": parsed.path.lstrip("/") or "postgres",
+            "user": parsed.username,
+            "password": parsed.password,
+            "host": parsed.hostname,
+            "port": parsed.port or 5432,
+            "sslmode": sslmode,
+            "connect_timeout": int(query.get("connect_timeout", [10])[0] or 10)
+        }
+
+        # Forward additional query params except for sslmode/connect_timeout.
+        for key, value in query.items():
+            if key in {"sslmode", "connect_timeout"}:
+                continue
+            connect_kwargs[key] = value[-1]
+
+        return psycopg2.connect(**connect_kwargs)
     return sqlite3.connect(DB_PATH)
 
 
