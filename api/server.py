@@ -4,9 +4,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import hashlib
 import requests
-import sqlite3
 from datetime import datetime
 import os
+from contextlib import contextmanager
 
 app = FastAPI()
 
@@ -26,14 +26,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# SQLite DB path
-DB_PATH = os.path.join(os.path.dirname(__file__), "orders.db")
+# Database configuration
+DATABASE_URL = os.getenv("DATABASE_URL")
+USE_POSTGRES = bool(DATABASE_URL and DATABASE_URL.startswith("postgres"))
 
-# DB init
+if USE_POSTGRES:
+    # Ensure SSL is enforced for Supabase connections if not already specified.
+    if "sslmode" not in DATABASE_URL:
+        DATABASE_URL = f"{DATABASE_URL}?sslmode=require"
+
+    import psycopg2
+
+    PLACEHOLDER = "%s"
+else:
+    import sqlite3
+
+    DB_PATH = os.path.join(os.path.dirname(__file__), "orders.db")
+    PLACEHOLDER = "?"
+
+
+def get_connection():
+    if USE_POSTGRES:
+        return psycopg2.connect(DATABASE_URL)
+    return sqlite3.connect(DB_PATH)
+
+
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
+    create_table_sql = """
         CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             order_number TEXT,
@@ -45,13 +64,66 @@ def init_db():
             status TEXT,
             created_at TEXT
         )
-    """)
-    conn.commit()
-    conn.close()
+    """
+
+    if USE_POSTGRES:
+        create_table_sql = """
+            CREATE TABLE IF NOT EXISTS orders (
+                id SERIAL PRIMARY KEY,
+                order_number TEXT UNIQUE,
+                product TEXT,
+                milk_type TEXT,
+                order_type TEXT,
+                quantity INTEGER,
+                amount NUMERIC,
+                status TEXT,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        """
+
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(create_table_sql)
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def execute_non_query(query, params=()):
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def fetch_one(query, params=()):
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        row = cursor.fetchone()
+        conn.commit()
+        return row
+    finally:
+        cursor.close()
+        conn.close()
+
 
 init_db()
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-cursor = conn.cursor()
+
+INSERT_ORDER_SQL = f"""
+    INSERT INTO orders (order_number, product, milk_type, order_type, quantity, amount, status, created_at)
+    VALUES ({PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER})
+"""
+
+UPDATE_ORDER_SQL = f"UPDATE orders SET status = {PLACEHOLDER} WHERE order_number = {PLACEHOLDER}"
+SELECT_ORDER_SQL = f"SELECT status FROM orders WHERE order_number = {PLACEHOLDER}"
 
 # TotalPay sandbox credentials
 MERCHANT_KEY = "d57181cc-9f60-11f0-a37e-563fa6bd0e58"
@@ -125,18 +197,23 @@ def create_payment_session(order: OrderRequest):
         raise HTTPException(status_code=502, detail="Invalid response from payment provider")
 
     redirect_url = body.get("redirect_url")
-    if not redirect_url:
-        print("Missing redirect_url in TotalPay response:", body)
-        raise HTTPException(status_code=500, detail="Missing redirect URL")
+   if not redirect_url:
+       print("Missing redirect_url in TotalPay response:", body)
+       raise HTTPException(status_code=500, detail="Missing redirect URL")
 
-    cursor.execute("""
-        INSERT INTO orders (order_number, product, milk_type, order_type, quantity, amount, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        order_number, order.product, order.milk_type, order.order_type,
-        order.quantity, order.amount, "pending", datetime.utcnow().isoformat()
-    ))
-    conn.commit()
+    execute_non_query(
+        INSERT_ORDER_SQL,
+        (
+            order_number,
+            order.product,
+            order.milk_type,
+            order.order_type,
+            order.quantity,
+            order.amount,
+            "pending",
+            datetime.utcnow().isoformat()
+        )
+    )
 
     return {"redirect_url": redirect_url, "order_number": order_number}
 
@@ -147,25 +224,30 @@ async def payment_callback(request: Request):
     order_status = data.get("order_status")
 
     if order_number and order_status:
-        cursor.execute("UPDATE orders SET status = ? WHERE order_number = ?", (order_status, order_number))
-        conn.commit()
+        execute_non_query(UPDATE_ORDER_SQL, (order_status, order_number))
         return JSONResponse({"message": "Callback processed"})
     raise HTTPException(status_code=400, detail="Invalid callback payload")
 
 @app.get("/api/order-status/{order_number}")
 def get_order_status(order_number: str):
-    cursor.execute("SELECT status FROM orders WHERE order_number = ?", (order_number,))
-    row = cursor.fetchone()
+    row = fetch_one(SELECT_ORDER_SQL, (order_number,))
     if not row:
         raise HTTPException(status_code=404, detail="Order not found")
-    return {"order_number": order_number, "status": row[0]}
+    status_value = row[0] if isinstance(row, (tuple, list)) else row
+    return {"order_number": order_number, "status": status_value}
 
 @app.get("/api/health")
 def health_check():
     try:
-        test_conn = sqlite3.connect(DB_PATH)
-        test_cursor = test_conn.cursor()
-        test_cursor.execute("SELECT 1")
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
         return {"status": "ok", "writable": True}
-    except:
+    except Exception:
         return {"status": "error", "writable": False}
+    finally:
+        try:
+            cursor.close()
+            conn.close()
+        except Exception:
+            pass
