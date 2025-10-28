@@ -6,7 +6,9 @@ import hashlib
 import requests
 from datetime import datetime
 import os
-from contextlib import contextmanager
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI()
 
