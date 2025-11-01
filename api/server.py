@@ -93,6 +93,39 @@ FOODICS_STATUS_MAP: Dict[str, str] = {
     "5": "void",
 }
 
+CATEGORY_OVERRIDES_BY_SLUG: Dict[str, Dict[str, Optional[str]]] = {
+    "milkshake": {
+        "id": "a0228670-4de6-4f15-bc78-09952ff384f8",
+        "reference": "ctgry09",
+        "name": "Milkshake",
+    },
+    "sweets": {
+        "id": "a022869b-579b-40e6-acbf-69395bf24331",
+        "reference": "ctgry11",
+        "name": "Sweets",
+    },
+    "water": {
+        "id": "a02289ed-35d5-4d6a-b5cb-a31af179768e",
+        "reference": "ctgry12",
+        "name": "Water",
+    },
+}
+
+PRODUCT_CATEGORY_OVERRIDES: Dict[str, str] = {
+    "oreo_milkshake": "milkshake",
+    "pistachio_milkshake": "milkshake",
+    "caramel_milkshake": "milkshake",
+    "mango_milkshake": "milkshake",
+    "banana_frappe": "milkshake",
+    "banana_pudding": "sweets",
+    "mango_cake": "sweets",
+    "tiramisu_cake": "sweets",
+    "sebastian_cheese_cake": "sweets",
+    "choclate_cake": "sweets",
+    "sparkling_water": "water",
+    "normal_water": "water",
+}
+
 
 def get_nested(data: Dict[str, Any], path: str) -> Any:
     keys = path.split(".")
@@ -2462,6 +2495,10 @@ def get_menu():
             continue
 
         product_key = str(product_id)
+        slug_source = (
+            product.get("slug") or product.get("reference") or product.get("name") or product.get("id")
+        )
+        product_slug = slugify(slug_source) if isinstance(slug_source, str) else str(product.get("id") or "")
         raw_payload_data: Dict[str, Any] = {}
         raw_payload = product.get("raw_payload")
         if isinstance(raw_payload, dict):
@@ -2494,6 +2531,42 @@ def get_menu():
         category_definition: Optional[Dict[str, Any]] = None
         if category_id:
             category_definition = category_lookup.get(category_id)
+
+        if category_definition is None:
+            override_slug = PRODUCT_CATEGORY_OVERRIDES.get(product_slug)
+            if override_slug:
+                override_meta = CATEGORY_OVERRIDES_BY_SLUG.get(override_slug, {})
+                for key in (
+                    normalize_identifier(override_meta.get("id")),
+                    normalize_identifier(override_meta.get("reference")),
+                    override_slug,
+                ):
+                    if key:
+                        category_definition = category_lookup.get(key)
+                    if category_definition:
+                        break
+
+                if category_definition is None:
+                    category_definition = dynamic_category_definitions.get(override_slug)
+                    if category_definition is None:
+                        category_definition = {
+                            "id": normalize_identifier(override_meta.get("id")),
+                            "name": override_meta.get("name") or override_slug.replace("_", " ").title(),
+                            "slug": override_slug,
+                            "index": len(ordered_category_definitions) + len(dynamic_category_definitions),
+                            "reference": normalize_identifier(override_meta.get("reference")),
+                        }
+                        dynamic_category_definitions[override_slug] = category_definition
+
+                register_category_definition(
+                    category_definition,
+                    category_id=override_meta.get("id"),
+                    reference=override_meta.get("reference"),
+                    slug=override_slug,
+                    name=override_meta.get("name"),
+                )
+                if not category_id and override_meta.get("id"):
+                    category_id = normalize_identifier(override_meta.get("id"))
 
         category_reference = normalize_identifier(product.get("category_reference"))
         if not category_reference:
