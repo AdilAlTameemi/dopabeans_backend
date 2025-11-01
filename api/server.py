@@ -2204,8 +2204,10 @@ def build_product_modifier_links(modifiers: List[Dict[str, Any]]):
 
         for product_ref in relationship_products:
             product_id = None
+            pivot: Dict[str, Any] = {}
             if isinstance(product_ref, dict):
                 product_id = product_ref.get("id") or product_ref.get("product_id")
+                pivot = product_ref.get("pivot") if isinstance(product_ref.get("pivot"), dict) else {}
             elif isinstance(product_ref, str):
                 product_id = product_ref
 
@@ -2226,6 +2228,7 @@ def build_product_modifier_links(modifiers: List[Dict[str, Any]]):
                 "product": {
                     "id": str(product_id),
                 },
+                "pivot": pivot,
             }
 
             links.append(
@@ -2431,7 +2434,9 @@ def get_menu():
         """
     )
 
-    product_modifier_links = fetch_all_dict("SELECT product_id, modifier_id FROM product_modifiers")
+    product_modifier_links = fetch_all_dict(
+        "SELECT product_id, modifier_id, raw_payload FROM product_modifiers"
+    )
     modifiers = fetch_all_dict(
         """
         SELECT id, name, name_localized, reference, is_active, is_required, min_options, max_options
@@ -2482,8 +2487,54 @@ def get_menu():
         modifier_details = modifier_lookup.get(modifier_key)
         if not modifier_details:
             continue
+        raw_link_payload = link.get("raw_payload")
+        payload_data: Dict[str, Any] = {}
+        if isinstance(raw_link_payload, dict):
+            payload_data = raw_link_payload
+        elif isinstance(raw_link_payload, str):
+            raw_text = raw_link_payload.strip()
+            if raw_text:
+                try:
+                    payload_data = json.loads(raw_text)
+                except json.JSONDecodeError:
+                    payload_data = {}
+
+        pivot_data = payload_data.get("pivot") if isinstance(payload_data.get("pivot"), dict) else {}
+
+        def parse_id_list(value: Any) -> List[str]:
+            if value is None:
+                return []
+            if isinstance(value, list):
+                return [str(item) for item in value if item]
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    return []
+                try:
+                    parsed = json.loads(text)
+                    if isinstance(parsed, list):
+                        return [str(item) for item in parsed if item]
+                except json.JSONDecodeError:
+                    return []
+            return []
+
+        excluded_ids = set(parse_id_list(pivot_data.get("excluded_options_ids")))
+        default_ids = set(parse_id_list(pivot_data.get("default_options_ids")))
+
+        modifier_copy = copy.deepcopy(modifier_details)
+        filtered_options: List[Dict[str, Any]] = []
+        for option in modifier_copy.get("options", []):
+            option_id = str(option.get("id")) if option.get("id") is not None else None
+            if option_id and excluded_ids and option_id in excluded_ids:
+                continue
+            if option_id and option_id in default_ids:
+                option["is_default"] = True
+            filtered_options.append(option)
+
+        modifier_copy["options"] = filtered_options
+
         product_key = str(product_id)
-        product_modifiers_map.setdefault(product_key, []).append(copy.deepcopy(modifier_details))
+        product_modifiers_map.setdefault(product_key, []).append(modifier_copy)
 
     sections_map: Dict[str, Dict[str, Any]] = {}
 
