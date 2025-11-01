@@ -1560,7 +1560,7 @@ def fetch_foodics_modifiers():
 
 
 def fetch_foodics_modifier_options():
-    return fetch_foodics_collection("modifier_options")
+    return fetch_foodics_collection("modifier_options?include=modifier")
 
 
 def fetch_foodics_payment_methods():
