@@ -36,7 +36,7 @@ app.add_middleware(
 )
 
 # Database configuration
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 if not DATABASE_URL:
     raise RuntimeError(
         "DATABASE_URL is not configured. Configure it with your Supabase Postgres connection string."
