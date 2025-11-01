@@ -41,8 +41,11 @@ if not DATABASE_URL:
     raise RuntimeError(
         "DATABASE_URL is not configured. Configure it with your Supabase Postgres connection string."
     )
-if not DATABASE_URL.startswith(("postgres://", "postgresql://")):
-    raise RuntimeError("DATABASE_URL must use a Postgres connection string for Supabase.")
+parsed_scheme = urlparse(DATABASE_URL).scheme.lower()
+if "postgres" not in parsed_scheme:
+    raise RuntimeError(
+        "DATABASE_URL must use a Postgres connection string (postgres:// or postgresql://)."
+    )
 
 USE_POSTGRES = True
 
