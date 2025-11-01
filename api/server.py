@@ -45,11 +45,18 @@ if not DATABASE_URL:
     raise RuntimeError(
         "DATABASE_URL is not configured. Configure it with your Supabase Postgres connection string."
     )
-parsed_scheme = urlparse(DATABASE_URL).scheme.lower()
+parsed_url = urlparse(DATABASE_URL)
+parsed_scheme = (parsed_url.scheme or "").lower()
 if "postgres" not in parsed_scheme:
     raise RuntimeError(
         "DATABASE_URL must use a Postgres connection string (postgres:// or postgresql://)."
     )
+
+pool_mode = parse_qs(parsed_url.query or "").get("pool_mode", ["unspecified"])[0]
+print(
+    f"[startup] Database target host={parsed_url.hostname} port={parsed_url.port or 'default'} "
+    f"scheme={parsed_url.scheme} pool_mode={pool_mode}"
+)
 
 USE_POSTGRES = True
 
