@@ -62,6 +62,11 @@ USE_POSTGRES = True
 
 FOODICS_API_BASE_URL = os.getenv("FOODICS_API_BASE_URL", "https://api.foodics.com/v5")
 FOODICS_API_TOKEN = os.getenv("FOODICS_API_TOKEN")
+FOODICS_ORDER_BRANCH_ID = os.getenv("FOODICS_ORDER_BRANCH_ID") or os.getenv("FOODICS_BRANCH_ID")
+try:
+    DEFAULT_FOODICS_ORDER_SOURCE = int(os.getenv("FOODICS_ORDER_SOURCE", "2"))
+except ValueError:
+    DEFAULT_FOODICS_ORDER_SOURCE = 2
 
 import psycopg2
 
@@ -1412,6 +1417,41 @@ def fetch_foodics_collection(resource: str):
         url = links.get("next")
 
     return records_accumulator
+
+
+def post_foodics_resource(resource: str, payload: Dict[str, Any], timeout: int = 30) -> Dict[str, Any]:
+    if not FOODICS_API_TOKEN:
+        raise HTTPException(status_code=500, detail="Foodics API token is not configured")
+
+    url = f"{FOODICS_API_BASE_URL.rstrip('/')}/{resource.lstrip('/')}"
+    headers = {
+        "Authorization": f"Bearer {FOODICS_API_TOKEN}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to reach Foodics API: {exc}") from exc
+
+    if response.status_code >= 400:
+        try:
+            error_body = response.json()
+            detail_message = (
+                error_body.get("detail")
+                or error_body.get("message")
+                or error_body.get("error")
+                or error_body
+            )
+        except ValueError:
+            detail_message = response.text
+        raise HTTPException(status_code=response.status_code, detail=f"Foodics API error: {detail_message}")
+
+    try:
+        return response.json()
+    except ValueError:
+        return {"status": "success"}
 
 
 def fetch_foodics_categories():
@@ -3099,6 +3139,29 @@ class OrderRequest(BaseModel):
     quantity: int
     amount: float
 
+
+class SubMenuOrderItem(BaseModel):
+    product_id: Optional[str] = None
+    product_reference: Optional[str] = None
+    name: Optional[str] = None
+    quantity: Optional[int] = None
+    unit_price: Optional[float] = None
+    milk_label: Optional[str] = None
+    bean_label: Optional[str] = None
+    milk_value: Optional[str] = None
+    bean_value: Optional[str] = None
+
+    class Config:
+        extra = "allow"
+
+
+class SubMenuOrderRequest(BaseModel):
+    order: Dict[str, Any]
+    items: List[SubMenuOrderItem]
+
+    class Config:
+        extra = "allow"
+
 @app.post("/api/create-payment-session")
 def create_payment_session(order: OrderRequest):
     order_number = f"DB-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
@@ -3178,6 +3241,136 @@ def create_payment_session(order: OrderRequest):
     )
 
     return {"redirect_url": redirect_url, "order_number": order_number}
+
+
+@app.post("/api/submenu-orders")
+def submit_submenu_order(request: SubMenuOrderRequest):
+    order_info = request.order or {}
+    normalized_type = str(order_info.get("order_type") or "").strip().lower()
+    foodics_type_map = {"inhouse": 1, "takeaway": 2, "delivery": 3}
+    foodics_type = foodics_type_map.get(normalized_type, 1)
+
+    branch_id = order_info.get("branch_id") or FOODICS_ORDER_BRANCH_ID
+    if not branch_id:
+        try:
+            branches = fetch_foodics_branches()
+            branch_id = branches[0].get("id") if branches else None
+        except Exception:
+            branch_id = None
+    if not branch_id:
+        raise HTTPException(status_code=500, detail="Foodics branch ID is not configured.")
+
+    guests = to_int(order_info.get("quantity"))
+    if guests is None or guests <= 0:
+        guests = max(1, sum(to_int(item.quantity) or 1 for item in request.items) if request.items else 1)
+
+    table_number = order_info.get("table_number")
+    kitchen_notes = order_info.get("product") or order_info.get("summary") or ""
+    if table_number:
+        kitchen_notes = f"{kitchen_notes} | Table: {table_number}" if kitchen_notes else f"Table: {table_number}"
+
+    products_payload: List[Dict[str, Any]] = []
+    total_price = 0.0
+
+    for item in request.items:
+        product_id = item.product_id or item.product_reference
+        if not product_id:
+            continue
+
+        quantity = to_int(item.quantity) or 1
+        if quantity <= 0:
+            quantity = 1
+
+        unit_price = to_float(item.unit_price)
+        if unit_price is None:
+            unit_price = 0.0
+
+        line_total = round(unit_price * quantity, 2)
+        total_price += line_total
+
+        item_notes: List[str] = []
+        if item.milk_label:
+            item_notes.append(f"Milk: {item.milk_label}")
+        if item.bean_label:
+            item_notes.append(f"Bean: {item.bean_label}")
+
+        product_entry: Dict[str, Any] = {
+            "product_id": str(product_id),
+            "discount_id": None,
+            "timed_events": [],
+            "promotion_id": None,
+            "taxes": [],
+            "options": [],
+            "meta": None,
+            "creator_id": None,
+            "voider_id": None,
+            "void_reason_id": None,
+            "quantity": quantity,
+            "discount_quantity": 0,
+            "unit_price": unit_price,
+            "discount_amount": 0,
+            "discount_type": None,
+            "total_price": line_total,
+            "tax_exclusive_discount_amount": 0,
+            "tax_exclusive_unit_price": unit_price,
+            "tax_exclusive_total_price": line_total,
+            "status": 1,
+            "returned_quantity": 0,
+        }
+
+        if item_notes:
+            product_entry["kitchen_notes"] = "; ".join(item_notes)
+
+        products_payload.append(product_entry)
+
+    if not products_payload:
+        raise HTTPException(status_code=400, detail="No valid products were provided for the order.")
+
+    total_price = round(total_price, 2)
+    timestamp_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+    order_payload: Dict[str, Any] = {
+        "type": foodics_type,
+        "source": DEFAULT_FOODICS_ORDER_SOURCE,
+        "status": 1,
+        "branch_id": branch_id,
+        "table_id": None,
+        "device_id": None,
+        "creator_id": None,
+        "closer_id": None,
+        "original_order_id": None,
+        "driver_id": None,
+        "customer_id": None,
+        "customer_address_id": None,
+        "discount_id": None,
+        "coupon_code": None,
+        "discount_type": None,
+        "promotion_id": None,
+        "guests": guests,
+        "kitchen_notes": kitchen_notes or None,
+        "customer_notes": None,
+        "business_date": None,
+        "subtotal_price": total_price,
+        "discount_amount": 0,
+        "rounding_amount": 0,
+        "total_price": total_price,
+        "tax_exclusive_discount_amount": 0,
+        "tax_exclusive_total_price": total_price,
+        "meta": {"origin": "sub_menu"},
+        "payments": [],
+        "charges": [],
+        "gift_card": None,
+        "products": products_payload,
+        "combos": [],
+        "opened_at": timestamp_str,
+        "created_at": timestamp_str,
+        "updated_at": timestamp_str,
+    }
+
+    foodics_response = post_foodics_resource("orders", {"data": order_payload})
+    response_payload = foodics_response.get("data", foodics_response)
+
+    return {"status": "success", "order": response_payload}
 
 @app.post("/api/payment-callback")
 async def payment_callback(request: Request):
