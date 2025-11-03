@@ -138,6 +138,7 @@ PRODUCT_CATEGORY_OVERRIDES: Dict[str, str] = {
 }
 
 REMOVED_PRODUCT_SLUGS: Set[str] = {
+    "coconut_blue_mojito",
     "tiramisu",
     "tiramisu_cake",
     "pdct600",
