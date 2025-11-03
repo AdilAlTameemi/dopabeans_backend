@@ -10,7 +10,7 @@ from datetime import datetime
 from decimal import Decimal
 import re
 import os
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 from dotenv import load_dotenv
 from urllib.parse import urlparse, parse_qs
 
@@ -129,6 +129,15 @@ PRODUCT_CATEGORY_OVERRIDES: Dict[str, str] = {
     "choclate_cake": "sweets",
     "sparkling_water": "water",
     "normal_water": "water",
+}
+
+REMOVED_PRODUCT_SLUGS: Set[str] = {
+    "tiramisu",
+    "tiramisu_cake",
+    "pdct600",
+    "sebastian_cheese_cake",
+    "sebastian_cheesecake",
+    "pdct610",
 }
 
 
@@ -2750,6 +2759,9 @@ def get_menu():
 
         product_modifiers = product_modifiers_map.get(product_key, [])
         product_entry = build_product_entry(product, category_definition, product_modifiers)
+        product_slug = slugify(product_entry.get("slug") or "")
+        if product_slug in REMOVED_PRODUCT_SLUGS:
+            continue
         sections_map[category_slug]["products"].append(product_entry)
 
     # Sort products within sections by price descending then name
@@ -2788,13 +2800,23 @@ def get_menu():
             }
         ] + ordered_sections
 
-    # Filter out the generic "other" section if it has no meaningful category assignment.
-    ordered_sections = [
-        section
-        for section in ordered_sections
-        if section.get("slug") not in {"other", "uncategorized"}
-        and not str(section.get("slug") or "").startswith("uncategorized")
-    ]
+    normalized_sections: List[Dict[str, Any]] = []
+    for section in ordered_sections:
+        products = section.get("products") or []
+        if not products:
+            continue
+
+        slug_value = str(section.get("slug") or "")
+        if slug_value in {"other", "uncategorized"} or slug_value.startswith("uncategorized"):
+            updated_section = dict(section)
+            raw_category = (updated_section.get("category") or "").strip().lower()
+            if not raw_category or raw_category in {"other", "uncategorized"}:
+                updated_section["category"] = "More Items"
+            normalized_sections.append(updated_section)
+        else:
+            normalized_sections.append(section)
+
+    ordered_sections = normalized_sections
 
     categories_payload: List[Dict[str, Any]] = []
     for position, section in enumerate(ordered_sections):
