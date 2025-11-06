@@ -67,11 +67,21 @@ try:
     DEFAULT_FOODICS_ORDER_SOURCE = int(os.getenv("FOODICS_ORDER_SOURCE", "2"))
 except ValueError:
     DEFAULT_FOODICS_ORDER_SOURCE = 2
+FOODICS_DEVICE_ID = os.getenv("FOODICS_DEVICE_ID")
+FOODICS_CREATOR_ID = os.getenv("FOODICS_CREATOR_ID")
+FOODICS_CLOSER_ID = os.getenv("FOODICS_CLOSER_ID")
+
+def get_bool_env(name: str, default: str = "false") -> bool:
+    value = os.getenv(name, default)
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+RUN_SCHEMA_MIGRATIONS = get_bool_env("RUN_SCHEMA_MIGRATIONS")
 
 import psycopg2
 
 PLACEHOLDER = "%s"
-
 
 ColumnAccessor = Union[str, Callable[[Dict[str, Any]], Any]]
 ColumnConfig = List[Tuple[str, ColumnAccessor]]
@@ -210,6 +220,7 @@ def to_float(value: Any) -> Optional[float]:
         except ValueError:
             return None
     return None
+
 
 
 def normalize_value_for_db(value: Any) -> Any:
@@ -857,7 +868,7 @@ def init_db():
         cursor.execute(create_categories_sql)
         cursor.execute(create_products_sql)
 
-        if USE_POSTGRES:
+        if USE_POSTGRES and RUN_SCHEMA_MIGRATIONS:
             cursor.execute(
                 """
                 DO $$
@@ -1219,6 +1230,9 @@ def init_db():
                 $$;
                 """
             )
+            print("[startup] Postgres schema migration checks completed (RUN_SCHEMA_MIGRATIONS=true).")
+        elif USE_POSTGRES:
+            print("[startup] RUN_SCHEMA_MIGRATIONS is disabled; skipping Postgres schema migration checks.")
         else:
             cursor.execute("PRAGMA table_info(categories)")
             category_columns = {row[1] for row in cursor.fetchall()}
@@ -3179,6 +3193,7 @@ class SubMenuOrderItem(BaseModel):
     bean_label: Optional[str] = None
     milk_value: Optional[str] = None
     bean_value: Optional[str] = None
+    options: Optional[List[Dict[str, Any]]] = None
 
     class Config:
         extra = "allow"
@@ -3275,9 +3290,21 @@ def create_payment_session(order: OrderRequest):
 @app.post("/api/submenu-orders")
 def submit_submenu_order(request: SubMenuOrderRequest):
     order_info = request.order or {}
-    normalized_type = str(order_info.get("order_type") or "").strip().lower()
+    raw_type = order_info.get("order_type")
+    if raw_type is None:
+        raw_type = order_info.get("type")
+    normalized_type = str(raw_type or "").strip().lower()
     foodics_type_map = {"inhouse": 1, "takeaway": 2, "delivery": 3}
     foodics_type = foodics_type_map.get(normalized_type, 1)
+
+    item_payloads: List[Dict[str, Any]] = []
+    for raw_item in request.items or []:
+        if isinstance(raw_item, SubMenuOrderItem):
+            item_payloads.append(raw_item.dict(exclude_none=False))
+        elif isinstance(raw_item, dict):
+            item_payloads.append(raw_item)
+        else:
+            item_payloads.append({})
 
     branch_id = order_info.get("branch_id") or FOODICS_ORDER_BRANCH_ID
     if not branch_id:
@@ -3289,39 +3316,113 @@ def submit_submenu_order(request: SubMenuOrderRequest):
     if not branch_id:
         raise HTTPException(status_code=500, detail="Foodics branch ID is not configured.")
 
-    guests = to_int(order_info.get("quantity"))
+    guests = to_int(order_info.get("guests"))
     if guests is None or guests <= 0:
-        guests = max(1, sum(to_int(item.quantity) or 1 for item in request.items) if request.items else 1)
+        guests = to_int(order_info.get("quantity"))
+    if guests is None or guests <= 0:
+        guests = max(1, sum(to_int(item.get("quantity")) or 1 for item in item_payloads) if item_payloads else 1)
 
     table_number = order_info.get("table_number")
-    kitchen_notes = order_info.get("product") or order_info.get("summary") or ""
+    kitchen_note_candidates = [
+        order_info.get("kitchen_notes"),
+        order_info.get("product"),
+        order_info.get("summary"),
+    ]
+    kitchen_note_parts: List[str] = []
+    for candidate in kitchen_note_candidates:
+        if isinstance(candidate, str):
+            stripped = candidate.strip()
+            if stripped:
+                kitchen_note_parts.append(stripped)
     if table_number:
-        kitchen_notes = f"{kitchen_notes} | Table: {table_number}" if kitchen_notes else f"Table: {table_number}"
+        table_label = str(table_number).strip()
+        if table_label:
+            kitchen_note_parts.append(f"Table: {table_label}")
+    kitchen_notes = " | ".join(kitchen_note_parts) if kitchen_note_parts else None
 
     products_payload: List[Dict[str, Any]] = []
-    total_price = 0.0
+    computed_subtotal = 0.0
 
-    for item in request.items:
-        product_id = item.product_id or item.product_reference
+    for item_data in item_payloads:
+        if not isinstance(item_data, dict):
+            continue
+        product_id = item_data.get("product_id") or item_data.get("product_reference")
         if not product_id:
             continue
 
-        quantity = to_int(item.quantity) or 1
-        if quantity <= 0:
+        quantity = to_int(item_data.get("quantity"))
+        if quantity is None or quantity <= 0:
             quantity = 1
 
-        unit_price = to_float(item.unit_price)
+        unit_price = to_float(item_data.get("unit_price"))
         if unit_price is None:
             unit_price = 0.0
 
-        line_total = round(unit_price * quantity, 2)
-        total_price += line_total
+        base_total = round(unit_price * quantity, 2)
 
-        item_notes: List[str] = []
-        if item.milk_label:
-            item_notes.append(f"Milk: {item.milk_label}")
-        if item.bean_label:
-            item_notes.append(f"Bean: {item.bean_label}")
+        options_payload: List[Dict[str, Any]] = []
+        options_total = 0.0
+        raw_options = item_data.get("options") or []
+        if isinstance(raw_options, list):
+            for option in raw_options:
+                if not isinstance(option, dict):
+                    continue
+                modifier_option_id = (
+                    option.get("modifier_option_id")
+                    or option.get("modifierOptionId")
+                    or option.get("option_id")
+                    or option.get("optionId")
+                    or option.get("id")
+                )
+                if not modifier_option_id:
+                    continue
+                option_quantity = to_int(option.get("quantity"))
+                if option_quantity is None or option_quantity <= 0:
+                    option_quantity = quantity
+
+                option_unit_price = to_float(option.get("unit_price") or option.get("unitPrice") or option.get("price"))
+                if option_unit_price is None:
+                    option_unit_price = 0.0
+
+                option_total = round(option_unit_price * option_quantity, 2)
+                options_total += option_total
+
+                partition = to_int(option.get("partition"))
+                if partition is None or partition <= 0:
+                    partition = 1
+
+                option_entry: Dict[str, Any] = {
+                    "modifier_option_id": str(modifier_option_id),
+                    "quantity": option_quantity,
+                    "unit_price": option_unit_price,
+                    "total_price": option_total,
+                    "partition": partition,
+                }
+
+                modifier_id_value = option.get("modifier_id") or option.get("modifierId")
+                if modifier_id_value:
+                    modifier_id_str = str(modifier_id_value).strip()
+                    if modifier_id_str:
+                        option_entry["modifier_id"] = modifier_id_str
+
+                options_payload.append(option_entry)
+
+        total_line_price = round(base_total + options_total, 2)
+        computed_subtotal += total_line_price
+
+        milk_label = item_data.get("milk_label")
+        bean_label = item_data.get("bean_label")
+
+        per_item_notes: List[str] = []
+        extra_note = item_data.get("kitchen_notes")
+        if isinstance(extra_note, str):
+            stripped_note = extra_note.strip()
+            if stripped_note:
+                per_item_notes.append(stripped_note)
+        if isinstance(milk_label, str) and milk_label.strip():
+            per_item_notes.append(f"Milk: {milk_label.strip()}")
+        if isinstance(bean_label, str) and bean_label.strip():
+            per_item_notes.append(f"Bean: {bean_label.strip()}")
 
         product_entry: Dict[str, Any] = {
             "product_id": str(product_id),
@@ -3329,7 +3430,7 @@ def submit_submenu_order(request: SubMenuOrderRequest):
             "timed_events": [],
             "promotion_id": None,
             "taxes": [],
-            "options": [],
+            "options": options_payload,
             "meta": None,
             "creator_id": None,
             "voider_id": None,
@@ -3339,64 +3440,174 @@ def submit_submenu_order(request: SubMenuOrderRequest):
             "unit_price": unit_price,
             "discount_amount": 0,
             "discount_type": None,
-            "total_price": line_total,
+            "total_price": total_line_price,
             "tax_exclusive_discount_amount": 0,
             "tax_exclusive_unit_price": unit_price,
-            "tax_exclusive_total_price": line_total,
+            "tax_exclusive_total_price": total_line_price,
             "status": 1,
             "returned_quantity": 0,
         }
 
-        if item_notes:
-            product_entry["kitchen_notes"] = "; ".join(item_notes)
+        if per_item_notes:
+            product_entry["kitchen_notes"] = "; ".join(per_item_notes)
 
         products_payload.append(product_entry)
 
     if not products_payload:
         raise HTTPException(status_code=400, detail="No valid products were provided for the order.")
 
-    total_price = round(total_price, 2)
+    computed_subtotal = round(computed_subtotal, 2)
+
+    subtotal_price = to_float(order_info.get("subtotal_price"))
+    if subtotal_price is None:
+        subtotal_price = computed_subtotal
+
+    total_price = to_float(order_info.get("total_price"))
+    if total_price is None:
+        total_price = subtotal_price
+
+    tax_exclusive_total_price = to_float(order_info.get("tax_exclusive_total_price"))
+    if tax_exclusive_total_price is None:
+        tax_exclusive_total_price = total_price
+
+    discount_amount = to_float(order_info.get("discount_amount")) or 0.0
+    rounding_amount = to_float(order_info.get("rounding_amount")) or 0.0
+    tax_exclusive_discount_amount = to_float(order_info.get("tax_exclusive_discount_amount")) or 0.0
+
+    business_date_value = order_info.get("business_date")
+    if isinstance(business_date_value, str):
+        business_date = business_date_value.strip() or None
+    else:
+        business_date = None
+    if business_date is None:
+        business_date = datetime.utcnow().strftime("%Y-%m-%d")
+
+    due_at_value = order_info.get("due_at")
+    if isinstance(due_at_value, str):
+        due_at = due_at_value.strip() or None
+    else:
+        due_at = due_at_value if due_at_value else None
+
+    customer_notes_value = order_info.get("customer_notes") or order_info.get("notes")
+    if isinstance(customer_notes_value, str):
+        customer_notes = customer_notes_value.strip() or None
+    else:
+        customer_notes = None
+
+    device_id_value = order_info.get("device_id") or FOODICS_DEVICE_ID
+    device_id = str(device_id_value).strip() if device_id_value else None
+
+    creator_id_value = order_info.get("creator_id") or FOODICS_CREATOR_ID
+    creator_id = str(creator_id_value).strip() if creator_id_value else None
+
+    closer_id_value = order_info.get("closer_id") or FOODICS_CLOSER_ID
+    closer_id = str(closer_id_value).strip() if closer_id_value else None
+
+    customer_id_value = order_info.get("customer_id")
+    customer_id = str(customer_id_value).strip() if customer_id_value else None
+
+    customer_address_id_value = order_info.get("customer_address_id")
+    customer_address_id = str(customer_address_id_value).strip() if customer_address_id_value else None
+
+    discount_id_value = order_info.get("discount_id")
+    discount_id = str(discount_id_value).strip() if discount_id_value else None
+
+    coupon_code_value = order_info.get("coupon_code")
+    coupon_code = coupon_code_value.strip() if isinstance(coupon_code_value, str) else None
+
+    discount_type_value = order_info.get("discount_type")
+    discount_type = discount_type_value.strip() if isinstance(discount_type_value, str) else None
+
+    promotion_id_value = order_info.get("promotion_id")
+    promotion_id = str(promotion_id_value).strip() if promotion_id_value else None
+
+    source_override = order_info.get("source")
+    source_value = to_int(source_override)
+
+    meta_payload: Dict[str, Any] = {"origin": "sub_menu"}
+    if isinstance(order_info.get("meta"), dict):
+        meta_payload.update({key: value for key, value in order_info["meta"].items() if value is not None})
+    if table_number:
+        meta_payload["table_number"] = str(table_number)
+    if source_override is not None:
+        meta_payload["requested_source"] = source_override
+    if isinstance(source_override, str) and not source_override.isdigit():
+        meta_payload["submitted_via"] = source_override
+    meta_payload = {key: value for key, value in meta_payload.items() if value is not None}
+
+    if source_value is None:
+        source_value = DEFAULT_FOODICS_ORDER_SOURCE
+
+    payments_value = order_info.get("payments")
+    payments = [payment for payment in payments_value if isinstance(payment, dict)] if isinstance(payments_value, list) else []
+
+    charges_value = order_info.get("charges")
+    charges = [charge for charge in charges_value if isinstance(charge, dict)] if isinstance(charges_value, list) else []
+
+    tags_value = order_info.get("tags")
+    if isinstance(tags_value, list):
+        tags = [
+            str(tag).strip()
+            for tag in tags_value
+            if isinstance(tag, (str, int)) and str(tag).strip()
+        ]
+    else:
+        tags = []
+
+    promotion = order_info.get("promotion") if order_info.get("promotion") is not None else None
+
     timestamp_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
     order_payload: Dict[str, Any] = {
         "type": foodics_type,
-        "source": DEFAULT_FOODICS_ORDER_SOURCE,
+        "source": source_value,
         "status": 1,
-        "branch_id": branch_id,
+        "branch_id": str(branch_id),
         "table_id": None,
-        "device_id": None,
-        "creator_id": None,
-        "closer_id": None,
+        "device_id": device_id,
+        "creator_id": creator_id,
+        "closer_id": closer_id,
         "original_order_id": None,
         "driver_id": None,
-        "customer_id": None,
-        "customer_address_id": None,
-        "discount_id": None,
-        "coupon_code": None,
-        "discount_type": None,
-        "promotion_id": None,
+        "customer_id": customer_id,
+        "customer_address_id": customer_address_id,
+        "discount_id": discount_id,
+        "coupon_code": coupon_code,
+        "discount_type": discount_type,
+        "promotion_id": promotion_id,
         "guests": guests,
-        "kitchen_notes": kitchen_notes or None,
-        "customer_notes": None,
-        "business_date": None,
-        "subtotal_price": total_price,
-        "discount_amount": 0,
-        "rounding_amount": 0,
+        "kitchen_notes": kitchen_notes,
+        "customer_notes": customer_notes,
+        "business_date": business_date,
+        "subtotal_price": subtotal_price,
+        "discount_amount": discount_amount,
+        "rounding_amount": rounding_amount,
         "total_price": total_price,
-        "tax_exclusive_discount_amount": 0,
-        "tax_exclusive_total_price": total_price,
-        "meta": {"origin": "sub_menu"},
-        "payments": [],
-        "charges": [],
+        "tax_exclusive_discount_amount": tax_exclusive_discount_amount,
+        "tax_exclusive_total_price": tax_exclusive_total_price,
+        "meta": meta_payload,
+        "payments": payments,
+        "charges": charges,
         "gift_card": None,
         "products": products_payload,
         "combos": [],
+        "tags": tags,
+        "promotion": promotion,
         "opened_at": timestamp_str,
         "created_at": timestamp_str,
         "updated_at": timestamp_str,
+        "due_at": due_at,
     }
 
-    foodics_response = post_foodics_resource("orders", {"data": order_payload})
+    try:
+        foodics_response = post_foodics_resource("orders", {"data": order_payload})
+    except HTTPException as exc:
+        try:
+            print("[submenu] Foodics order payload:", json.dumps(order_payload))
+        except Exception:
+            print("[submenu] Foodics order payload: <unserializable>")
+        print("[submenu] Foodics order error:", exc.detail)
+        raise
     response_payload = foodics_response.get("data", foodics_response)
 
     return {"status": "success", "order": response_payload}
