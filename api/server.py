@@ -3323,6 +3323,7 @@ def submit_submenu_order(request: SubMenuOrderRequest):
         guests = max(1, sum(to_int(item.get("quantity")) or 1 for item in item_payloads) if item_payloads else 1)
 
     table_number = order_info.get("table_number")
+    table_identifier: Optional[str] = None
     kitchen_note_candidates = [
         order_info.get("kitchen_notes"),
         order_info.get("product"),
@@ -3334,11 +3335,14 @@ def submit_submenu_order(request: SubMenuOrderRequest):
             stripped = candidate.strip()
             if stripped:
                 kitchen_note_parts.append(stripped)
-    if table_number:
+    if table_number is not None:
         table_label = str(table_number).strip()
         if table_label:
+            table_identifier = table_label
             kitchen_note_parts.append(f"Table: {table_label}")
     kitchen_notes = " | ".join(kitchen_note_parts) if kitchen_note_parts else None
+    if not kitchen_notes:
+        kitchen_notes = "Order received via sub-menu"
 
     products_payload: List[Dict[str, Any]] = []
     computed_subtotal = 0.0
@@ -3399,12 +3403,6 @@ def submit_submenu_order(request: SubMenuOrderRequest):
                     "partition": partition,
                 }
 
-                modifier_id_value = option.get("modifier_id") or option.get("modifierId")
-                if modifier_id_value:
-                    modifier_id_str = str(modifier_id_value).strip()
-                    if modifier_id_str:
-                        option_entry["modifier_id"] = modifier_id_str
-
                 options_payload.append(option_entry)
 
         total_line_price = round(base_total + options_total, 2)
@@ -3426,30 +3424,19 @@ def submit_submenu_order(request: SubMenuOrderRequest):
 
         product_entry: Dict[str, Any] = {
             "product_id": str(product_id),
-            "discount_id": None,
-            "timed_events": [],
-            "promotion_id": None,
-            "taxes": [],
-            "options": options_payload,
-            "meta": None,
-            "creator_id": None,
-            "voider_id": None,
-            "void_reason_id": None,
             "quantity": quantity,
-            "discount_quantity": 0,
             "unit_price": unit_price,
-            "discount_amount": 0,
-            "discount_type": None,
             "total_price": total_line_price,
-            "tax_exclusive_discount_amount": 0,
+            "discount_amount": 0,
             "tax_exclusive_unit_price": unit_price,
             "tax_exclusive_total_price": total_line_price,
-            "status": 1,
-            "returned_quantity": 0,
+            "options": options_payload,
         }
 
         if per_item_notes:
             product_entry["kitchen_notes"] = "; ".join(per_item_notes)
+        else:
+            product_entry["kitchen_notes"] = ""
 
         products_payload.append(product_entry)
 
@@ -3490,18 +3477,24 @@ def submit_submenu_order(request: SubMenuOrderRequest):
 
     customer_notes_value = order_info.get("customer_notes") or order_info.get("notes")
     if isinstance(customer_notes_value, str):
-        customer_notes = customer_notes_value.strip() or None
+        customer_notes = customer_notes_value.strip()
     else:
-        customer_notes = None
+        customer_notes = ""
 
     device_id_value = order_info.get("device_id") or FOODICS_DEVICE_ID
-    device_id = str(device_id_value).strip() if device_id_value else None
+    if not device_id_value:
+        raise HTTPException(status_code=500, detail="Foodics device ID is not configured.")
+    device_id = str(device_id_value).strip()
 
     creator_id_value = order_info.get("creator_id") or FOODICS_CREATOR_ID
-    creator_id = str(creator_id_value).strip() if creator_id_value else None
+    if not creator_id_value:
+        raise HTTPException(status_code=500, detail="Foodics creator ID is not configured.")
+    creator_id = str(creator_id_value).strip()
 
     closer_id_value = order_info.get("closer_id") or FOODICS_CLOSER_ID
-    closer_id = str(closer_id_value).strip() if closer_id_value else None
+    if not closer_id_value:
+        raise HTTPException(status_code=500, detail="Foodics closer ID is not configured.")
+    closer_id = str(closer_id_value).strip()
 
     customer_id_value = order_info.get("customer_id")
     customer_id = str(customer_id_value).strip() if customer_id_value else None
@@ -3563,18 +3556,10 @@ def submit_submenu_order(request: SubMenuOrderRequest):
         "source": source_value,
         "status": 1,
         "branch_id": str(branch_id),
-        "table_id": None,
         "device_id": device_id,
         "creator_id": creator_id,
         "closer_id": closer_id,
-        "original_order_id": None,
-        "driver_id": None,
         "customer_id": customer_id,
-        "customer_address_id": customer_address_id,
-        "discount_id": discount_id,
-        "coupon_code": coupon_code,
-        "discount_type": discount_type,
-        "promotion_id": promotion_id,
         "guests": guests,
         "kitchen_notes": kitchen_notes,
         "customer_notes": customer_notes,
@@ -3585,19 +3570,33 @@ def submit_submenu_order(request: SubMenuOrderRequest):
         "total_price": total_price,
         "tax_exclusive_discount_amount": tax_exclusive_discount_amount,
         "tax_exclusive_total_price": tax_exclusive_total_price,
-        "meta": meta_payload,
         "payments": payments,
         "charges": charges,
-        "gift_card": None,
         "products": products_payload,
-        "combos": [],
         "tags": tags,
         "promotion": promotion,
-        "opened_at": timestamp_str,
-        "created_at": timestamp_str,
-        "updated_at": timestamp_str,
         "due_at": due_at,
     }
+
+    if customer_address_id is not None:
+        order_payload["customer_address_id"] = customer_address_id
+    if discount_id is not None:
+        order_payload["discount_id"] = discount_id
+    if coupon_code is not None:
+        order_payload["coupon_code"] = coupon_code
+    if discount_type is not None:
+        order_payload["discount_type"] = discount_type
+    if promotion_id is not None:
+        order_payload["promotion_id"] = promotion_id
+    if meta_payload:
+        order_payload["meta"] = meta_payload
+    if table_identifier:
+        order_payload["table_id"] = table_identifier
+    order_payload["opened_at"] = timestamp_str
+    order_payload["created_at"] = timestamp_str
+    order_payload["updated_at"] = timestamp_str
+    if customer_notes == "":
+        order_payload["customer_notes"] = ""
 
     try:
         foodics_response = post_foodics_resource("orders", {"data": order_payload})
