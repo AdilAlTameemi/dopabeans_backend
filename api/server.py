@@ -3321,7 +3321,8 @@ def submit_submenu_order(request: SubMenuOrderRequest):
         guests = max(1, sum(to_int(item.get("quantity")) or 1 for item in item_payloads) if item_payloads else 1)
 
     table_number = order_info.get("table_number")
-    table_identifier: Optional[str] = None
+    table_label: Optional[str] = None
+    table_id_value = normalize_identifier(order_info.get("table_id"))
     kitchen_note_candidates = [
         order_info.get("kitchen_notes"),
         order_info.get("product"),
@@ -3334,10 +3335,10 @@ def submit_submenu_order(request: SubMenuOrderRequest):
             if stripped:
                 kitchen_note_parts.append(stripped)
     if table_number is not None:
-        table_label = str(table_number).strip()
-        if table_label:
-            table_identifier = table_label
-            kitchen_note_parts.append(f"Table: {table_label}")
+        table_number_text = str(table_number).strip()
+        if table_number_text:
+            table_label = table_number_text
+            kitchen_note_parts.append(f"Table: {table_number_text}")
     kitchen_notes = " | ".join(kitchen_note_parts) if kitchen_note_parts else None
     if not kitchen_notes:
         kitchen_notes = "Order received via sub-menu"
@@ -3518,8 +3519,10 @@ def submit_submenu_order(request: SubMenuOrderRequest):
     meta_payload: Dict[str, Any] = {"origin": "sub_menu"}
     if isinstance(order_info.get("meta"), dict):
         meta_payload.update({key: value for key, value in order_info["meta"].items() if value is not None})
-    if table_number:
-        meta_payload["table_number"] = str(table_number)
+    if table_label:
+        meta_payload["table_number"] = table_label
+    elif table_id_value:
+        meta_payload["table_number"] = table_id_value
     if source_override is not None:
         meta_payload["requested_source"] = source_override
     if isinstance(source_override, str) and not source_override.isdigit():
@@ -3588,8 +3591,8 @@ def submit_submenu_order(request: SubMenuOrderRequest):
         order_payload["promotion_id"] = promotion_id
     if meta_payload:
         order_payload["meta"] = meta_payload
-    if table_identifier:
-        order_payload["table_id"] = table_identifier
+    if table_id_value:
+        order_payload["table_id"] = table_id_value
     order_payload["opened_at"] = timestamp_str
     order_payload["created_at"] = timestamp_str
     order_payload["updated_at"] = timestamp_str
