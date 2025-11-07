@@ -62,45 +62,18 @@ USE_POSTGRES = True
 
 FOODICS_API_BASE_URL = os.getenv("FOODICS_API_BASE_URL", "https://api.foodics.com/v5")
 FOODICS_API_TOKEN = os.getenv("FOODICS_API_TOKEN")
-FOODICS_ORDER_BRANCH_ID = os.getenv("FOODICS_ORDER_BRANCH_ID") or os.getenv("FOODICS_BRANCH_ID")
+FOODICS_ORDER_BRANCH_ID = (
+    os.getenv("FOODICS_ORDER_BRANCH_ID")
+    or os.getenv("FOODICS_BRANCH_ID")
+    or "a01238c6-deaf-423f-b2e5-f65a7239400c"
+)
 try:
     DEFAULT_FOODICS_ORDER_SOURCE = int(os.getenv("FOODICS_ORDER_SOURCE", "2"))
 except ValueError:
     DEFAULT_FOODICS_ORDER_SOURCE = 2
-FOODICS_DEVICE_ID = os.getenv("FOODICS_DEVICE_ID")
-FOODICS_CREATOR_ID = os.getenv("FOODICS_CREATOR_ID")
-FOODICS_CLOSER_ID = os.getenv("FOODICS_CLOSER_ID")
-
-CACHED_DEFAULT_FOODICS_DEVICE_ID: Optional[str] = None
-
-def resolve_default_foodics_device_id() -> Optional[str]:
-    """
-    Attempts to fetch a usable Foodics device ID when one is not configured.
-    The result is cached to avoid hitting the API repeatedly.
-    """
-    global CACHED_DEFAULT_FOODICS_DEVICE_ID
-    if CACHED_DEFAULT_FOODICS_DEVICE_ID:
-        return CACHED_DEFAULT_FOODICS_DEVICE_ID
-
-    try:
-        devices = fetch_foodics_devices()
-    except HTTPException:
-        return None
-    except Exception:
-        return None
-
-    if not isinstance(devices, list):
-        return None
-
-    for device in devices:
-        if not isinstance(device, dict):
-            continue
-        candidate_id = normalize_identifier(device.get("id") or device.get("reference"))
-        if candidate_id:
-            CACHED_DEFAULT_FOODICS_DEVICE_ID = candidate_id
-            return candidate_id
-
-    return None
+FOODICS_DEVICE_ID = os.getenv("FOODICS_DEVICE_ID") or "a01238c6-eccb-4463-9566-da418839c0ab"
+FOODICS_CREATOR_ID = os.getenv("FOODICS_CREATOR_ID") or "a0451f9f-b2f6-4d92-a5d9-6e99785f7e24"
+FOODICS_CLOSER_ID = os.getenv("FOODICS_CLOSER_ID") or "a0451f9f-b2f6-4d92-a5d9-6e99785f7e24"
 
 def get_bool_env(name: str, default: str = "false") -> bool:
     value = os.getenv(name, default)
@@ -3337,13 +3310,7 @@ def submit_submenu_order(request: SubMenuOrderRequest):
         else:
             item_payloads.append({})
 
-    branch_id = order_info.get("branch_id") or FOODICS_ORDER_BRANCH_ID
-    if not branch_id:
-        try:
-            branches = fetch_foodics_branches()
-            branch_id = branches[0].get("id") if branches else None
-        except Exception:
-            branch_id = None
+    branch_id = FOODICS_ORDER_BRANCH_ID
     if not branch_id:
         raise HTTPException(status_code=500, detail="Foodics branch ID is not configured.")
 
@@ -3512,19 +3479,17 @@ def submit_submenu_order(request: SubMenuOrderRequest):
     else:
         customer_notes = ""
 
-    device_id_value = order_info.get("device_id") or FOODICS_DEVICE_ID
-    if not device_id_value:
-        device_id_value = resolve_default_foodics_device_id()
+    device_id_value = FOODICS_DEVICE_ID
     if not device_id_value:
         raise HTTPException(status_code=500, detail="Foodics device ID is not configured.")
     device_id = str(device_id_value).strip()
 
-    creator_id_value = order_info.get("creator_id") or FOODICS_CREATOR_ID
+    creator_id_value = FOODICS_CREATOR_ID
     if not creator_id_value:
         raise HTTPException(status_code=500, detail="Foodics creator ID is not configured.")
     creator_id = str(creator_id_value).strip()
 
-    closer_id_value = order_info.get("closer_id") or FOODICS_CLOSER_ID
+    closer_id_value = FOODICS_CLOSER_ID
     if not closer_id_value:
         raise HTTPException(status_code=500, detail="Foodics closer ID is not configured.")
     closer_id = str(closer_id_value).strip()
