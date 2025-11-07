@@ -1470,17 +1470,40 @@ def post_foodics_resource(resource: str, payload: Dict[str, Any], timeout: int =
         raise HTTPException(status_code=502, detail=f"Failed to reach Foodics API: {exc}") from exc
 
     if response.status_code >= 400:
+        detail_message: Any
+        errors_summary: Optional[str] = None
         try:
             error_body = response.json()
-            detail_message = (
-                error_body.get("detail")
-                or error_body.get("message")
-                or error_body.get("error")
-                or error_body
-            )
         except ValueError:
             detail_message = response.text
-        raise HTTPException(status_code=response.status_code, detail=f"Foodics API error: {detail_message}")
+        else:
+            if isinstance(error_body, dict):
+                detail_message = (
+                    error_body.get("detail")
+                    or error_body.get("message")
+                    or error_body.get("error")
+                    or error_body
+                )
+                errors_payload = error_body.get("errors")
+                if isinstance(errors_payload, dict):
+                    fragments: List[str] = []
+                    for key, value in errors_payload.items():
+                        if isinstance(value, (list, tuple)):
+                            text = ", ".join(str(item) for item in value if item is not None)
+                        else:
+                            text = str(value)
+                        text = text.strip()
+                        if text:
+                            fragments.append(f"{key}: {text}")
+                    if fragments:
+                        errors_summary = "; ".join(fragments)
+            else:
+                detail_message = error_body
+
+        message = f"Foodics API error: {detail_message}"
+        if errors_summary:
+            message = f"{message} ({errors_summary})"
+        raise HTTPException(status_code=response.status_code, detail=message)
 
     try:
         return response.json()
