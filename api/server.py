@@ -3599,7 +3599,7 @@ def submit_submenu_order(request: SubMenuOrderRequest):
         order_payload["customer_notes"] = ""
 
     try:
-        foodics_response = post_foodics_resource("orders", {"data": order_payload})
+        foodics_response = post_foodics_resource("orders", order_payload)
     except HTTPException as exc:
         try:
             print("[submenu] Foodics order payload:", json.dumps(order_payload))
