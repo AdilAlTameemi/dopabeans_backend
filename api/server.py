@@ -71,6 +71,37 @@ FOODICS_DEVICE_ID = os.getenv("FOODICS_DEVICE_ID")
 FOODICS_CREATOR_ID = os.getenv("FOODICS_CREATOR_ID")
 FOODICS_CLOSER_ID = os.getenv("FOODICS_CLOSER_ID")
 
+CACHED_DEFAULT_FOODICS_DEVICE_ID: Optional[str] = None
+
+def resolve_default_foodics_device_id() -> Optional[str]:
+    """
+    Attempts to fetch a usable Foodics device ID when one is not configured.
+    The result is cached to avoid hitting the API repeatedly.
+    """
+    global CACHED_DEFAULT_FOODICS_DEVICE_ID
+    if CACHED_DEFAULT_FOODICS_DEVICE_ID:
+        return CACHED_DEFAULT_FOODICS_DEVICE_ID
+
+    try:
+        devices = fetch_foodics_devices()
+    except HTTPException:
+        return None
+    except Exception:
+        return None
+
+    if not isinstance(devices, list):
+        return None
+
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        candidate_id = normalize_identifier(device.get("id") or device.get("reference"))
+        if candidate_id:
+            CACHED_DEFAULT_FOODICS_DEVICE_ID = candidate_id
+            return candidate_id
+
+    return None
+
 def get_bool_env(name: str, default: str = "false") -> bool:
     value = os.getenv(name, default)
     if value is None:
@@ -3482,6 +3513,8 @@ def submit_submenu_order(request: SubMenuOrderRequest):
         customer_notes = ""
 
     device_id_value = order_info.get("device_id") or FOODICS_DEVICE_ID
+    if not device_id_value:
+        device_id_value = resolve_default_foodics_device_id()
     if not device_id_value:
         raise HTTPException(status_code=500, detail="Foodics device ID is not configured.")
     device_id = str(device_id_value).strip()
